@@ -1,0 +1,877 @@
+---
+title: "Adult Census Income Binary Classifier"
+author: "Ujjawal Madan"
+date: "14/02/2020"
+header-includes:
+- \usepackage{float} 
+- \floatplacement{figure}{H}
+geometry: margin = 2cm
+urlcolor: blue
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 2  #
+    number_sections: true 
+---
+
+```{r global options, include=FALSE}
+knitr::opts_chunk$set(echo = F, fig.width = 10, warning = F, fig.pos ='h', message = F, error = F)
+```
+
+```{r initalize, include= F}
+
+list.of.packages <- c('dplyr', 'readr','ggplot2','caret','readr','mlbench','ROCR','MLeval','pROC','klaR','randomForest','e1071','MLmetrics','rpart','data.table','parallelMap','parallel','xgboost','gridExtra','rBayesianOptimization','arm', 'ada', 'knitr')
+
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+
+if(length(new.packages)) install.packages(new.packages)
+
+#Library Initialize
+library(knitr)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(caret)
+library(readr)
+library(mlbench)
+library(ROCR)
+library(MLeval)
+library(pROC)
+library(ggthemes)
+library(klaR)
+library(randomForest)
+library(e1071)
+library(MLmetrics)
+library(rpart)
+library(data.table)
+library(parallelMap)
+library(parallel)
+library(xgboost)
+library(gridExtra)
+library(rBayesianOptimization)
+library(arm)
+library(ada)
+parallelStartSocket(cpus = detectCores())
+
+```
+
+# Introduction
+In this project, I build a binary classifier that predicts whether a person's income is over $\50,000 or under \$50,000 using the 1994 Cenusus Income Data Set. This dataset, originally extracted by Barry Becker from the 1994 US Census Database contains over 48,000 rows of data and 14 predictor variables. First, I explore each variable graphically stratified by income level after which the data is then preprocessed and the feature variables are selected. I then run several commonly-used machine learning algorithms with repeated cross validation and parameter tuning. Lastly, three versions of each model are created by optimizing the thresholds for Accuracy, F1-Score, and the Distance to Left Point - ROC Curve. The final three models that perform best in each of the three categories (Accuracy, F1, Distance to Left Point) are then tested with the final validation set.  
+
+Dataset can be found here: https://www.kaggle.com/uciml/adult-census-income  
+  
+More details can be found here. http://www.cs.toronto.edu/~delve/data/adult/adultDetail.html
+
+```{r libraries, include = F}
+
+data <- read_csv("C:/Users/Chinny/Downloads/adult-income-dataset.zip", na = c("?", "NA"))
+colnames(data) <- c('age', 'workclass', 'fnlwgt', 'education', 'education_num', 'marital_status', 'occupation','relationship','race','gender','capital_gain', 'capital_loss','hours_per_week', 'native_country','income')
+data <- data %>% as.data.frame()
+
+```
+
+# Examination of Variables
+
+Let's examine the variables and the descriptions:
+
+```{r table, include = F}
+
+var_table <- data.frame(cbind(
+  c('age', 'workclass', 'fnlwgt', 'education', 'education_num', 'marital_status', 'occupation','relationship','race','gender','capital_gain', 'capital_loss','hours_per_week', 'native_country','income'), 
+  c('Age of the individual', 'Employment status of the individual', 'The number of people the census believes the entry represents', 'Highest level of education achieved by the individual', 'The duration one has been in school', 'Marital status of the individual', 'General occupation of the individual', 'Relationship or family status of the individual. e.g. Own Child, Not in Family etc.', 'The individual’s race or ethnic background', 'Biological sex of the individual', 'Capital Gains reported by the individual', 'Capital Losses reported by the individual', 'Hours per week spent at work', "Individual's Country of Origin", 'Whether the individual makes more or less than $50,000 annually.')))
+
+colnames (var_table) <- c('Variable', 'Variable Description')
+
+```
+
+```{r echo = F,results='asis'}
+#Examination of Feature Variables
+
+kable(var_table, caption = "Examination of Variables in Adult Income Census Dataset")
+
+```
+
+Intuitively, one can see that some variables may be more predictive than others. For example, it would make sense for fnlwgt to not be linked in any way with income level. 
+
+## Data Formatting
+
+There are several steps that need to performed initially to view our data:
+
+**Step 1** - Convert categorical variables into factored form. 
+
+```{r, include= F}
+
+#Cleaning - Step #1
+data[,2] <- factor(data[,2])
+data[,4] <- factor(data[,4])
+data[,6] <- factor(data[,6])
+data[,7] <- factor(data[,7])
+data[,8] <- factor(data[,8])
+data[,9] <- factor(data[,9])
+data[,10] <- factor(data[,10])
+data[,14] <- factor(data[,14])
+data[,15] <- factor(data[,15])
+  
+```
+  
+**Step 2**: Examine the incomplete data and decide on course of action. 
+
+```{r, include = F}
+
+i <- seq(1,15)
+NAs <- sapply (i, function(counter){
+  nrow(data[!complete.cases(data[,counter]),])
+})
+NAs <- as.data.frame(cbind(colnames(data), NAs))
+colnames(NAs) <- c('Variable', 'Number of Values Missing')
+
+```
+
+```{r}
+
+kable(NAs, caption = "Missing Valuables by Variable in Adult Income Census Dataset")
+
+```
+   
+```{r eval = F}
+nrow(data[!complete.cases(data),])
+```
+Number of rows that contain a value in Occupation (not NA) when the Workclass field is NA.
+```{r}
+which(is.na(data[!complete.cases(data[,2]),c(2,7)]) == F)
+```
+  
+  
+After examining the data, I discover that the issue lies with the native country, workclass, and occupation fields. Moreover, all the rows where the workclass entry is missing, the occupation entry is also missing. There are several options at this point:
+
+|    *Option 1*: The NAs are left alone and the algorithms treat it as such.  
+|        As not all of the machine learning algorithms will be able to handle NA values, this option is not viable.  
+|
+|    *Option 2*: The NAs are replaced with a value, either the mode of that variable or a random value.  
+|        This is an option, but could possibly tamper with our models.  
+|
+|    *Option 3*: Remove the fields that contain NAs.
+  
+It certainly makes sense to remove the rows that are missing the occupation and workclass fields since there are two missing entries in those rows. While one might decide to not remove the rows with native_country missing, I choose to delete those rows as well as they only constitute a very small fraction of all the data and there are more than enough rows for training, testing and validation. In total, 3620 rows are removed altogether.
+  
+**Result:** All rows that contain one or more NA are removed.
+  
+
+```{r include = F}
+data <- na.omit(data)
+```
+  
+  
+## Visualizing the Variables
+
+
+```{r echo = F, include = F}
+
+
+#Plot by age
+age <- data %>% group_by(age) %>% summarize (n(), average = mean(income == '>50K'))
+colnames (age) <- c('age', 'n', 'income')
+plot1 <- age %>% ggplot (aes(age, n, color = income)) +
+  geom_point() + ggtitle('Age') + labs(x = 'Age', y='Count', color = 'income')
+
+#Plot by Race
+race_data <- data %>% group_by(race) %>% count(income) %>% mutate(ratio=scales::percent(n/sum(n)))
+position <- levels(data$race)[c(2, 5, 4, 3, 1)]
+plot2 <- data %>% ggplot(aes(race, fill=forcats::fct_rev(income)))+ geom_bar(stat='count', position = 'fill') + coord_flip()+ scale_x_discrete(limits = position) + geom_text(data=race_data, aes(y=n,label=ratio), position=position_fill(vjust=0.5)) + ggtitle('Race') + labs(x = '  ', y= '  ', fill = "income")   
+
+#Plot the gender disparity
+gender_data <- data %>% group_by(gender) %>% count(income) %>% mutate(ratio=scales::percent(n/sum(n)))
+plot3 <- data %>% ggplot(aes(gender, fill=forcats::fct_rev(income)) ) +
+  geom_bar(stat='count', position = 'fill') + 
+  scale_x_discrete() + 
+  geom_text(data=gender_data, aes(y=n,label=ratio), position=position_fill(vjust=0.5))+ ggtitle('Gender') + labs(x = '   ', y='   ', fill = "income")
+  
+#Plot by Native Country
+native_country_data <- data %>% group_by(native_country) %>% count(income) %>% mutate(ratio=scales::percent(n/sum(n)))
+
+position <- levels(data$native_country)[c(36, 10, 19, 9, 20, 2, 12, 24, 41, 1, 18, 22, 3, 11, 30, 17, 21, 5, 39, 31, 32, 35, 37, 7, 23, 14, 33, 16, 34, 25, 29, 40, 38, 8, 27, 6, 26, 4, 28, 13)]
+
+plot4 <- data %>% ggplot(aes(native_country, fill=forcats::fct_rev(income))) + 
+  geom_bar(stat='count', position = 'fill') + 
+  scale_x_discrete(limits = position) +
+  coord_flip() +
+  geom_text(data=native_country_data, aes(y=n,label=ratio), position=position_fill(vjust=0.5)) + ggtitle('Native Country') + labs(x='    ', y = '  ', fill = "income")
+
+```
+
+
+```{r plot1, echo = F, fig.width = 10, fig.height = 10, warning = F}
+
+lay <- rbind(c(1,4),c(2,4), c(3,4))
+grid.arrange(plot1, plot2, plot3, plot4, layout_matrix = lay)
+
+```
+
+The above plots are of individual personal characterstics: Age, Race, Gender, and Native Country. 
+
+**Age:** Starting from the top left plot, Age, we can see that as one gets older, the odds of one having an income over $50,000 goes from almost 0 to 40 percent, peaking between 40 and 60 years of age, after which the probability slowly decrease with age.
+  
+**Race:** An individual in this dataset falls into one of five categories. If one is either Amer-Indian_Eskimo, Black or Other, the odds of that individual making more than $50,000 are around 12 - 13 percent. If one is either White or Asian the odds are much greater - 26 to 28 percent. 
+
+**Gender:**  There is a clear discrepancy in income level between males and females, with a randomly selected male having a three times greater chance of making more than $50,000 than a randomly selected female.
+
+**Native Country:** Based on the rightmost plot, the native country of a randomly selected individual can noticeably alter the chance of them making more than $50,000, with an randomly selected individual from Taiwan having almost five times as much chance of making moree than $50,000 than a randomly selected individual from Guatemala.
+
+```{r include = F}
+
+#Plot  Education
+position <- rev(levels(data$education)[c(15, 11, 13, 10, 8, 9, 16, 12, 3, 1, 6, 7, 2, 5, 4, 14)])
+#position <- rev(position)
+education_data <- data %>% 
+  group_by(education) %>% 
+  count(income) %>% 
+  mutate(ratio=scales::percent(n/sum(n)))
+
+plot5 <- data %>% ggplot(aes(education, fill=forcats::fct_rev(income))) + 
+                   geom_bar(stat='count', position = 'fill') + 
+                   scale_x_discrete(limits = position) +
+                   coord_flip() +
+                   geom_text(data=education_data, aes(y=n,label=ratio), position=position_fill(vjust=0.5)) + 
+                   ggtitle('Level of Education') + 
+                   labs(y = '   ', x='    ', fill = "income")
+
+
+#Plot Education_number
+education_num_data <- data %>% 
+  group_by(education_num) %>% 
+  count(income) %>% 
+  mutate(ratio=scales::percent(n/sum(n)))
+
+plot6 <- data %>% ggplot (aes(education_num, fill=forcats::fct_rev(income))) +
+ geom_bar(stat='count', position='fill') +
+  coord_flip() +
+  geom_text(data=education_num_data, aes(y=n,label=ratio), position=position_fill(vjust=0.5)) + 
+  ggtitle('Number of Years spent in Education') + 
+  labs(y = '   ', x='    ', fill = "income")
+                 
+```
+
+
+```{r fig.height = 5, warning = F}
+
+grid.arrange(plot5, plot6, ncol = 2)             
+
+```
+
+**Level of Education and Number of Years Spent in Education**  The plots intutively seem correlated, given that the level of education often corresponds to the duration one has been in school. The above plots confirm the logical inference that higher education means there is greater chance of one's income being more than 50,000. A clear trend is visible that actually looks exponential in growth: the higher the number of years or level of education (linear), the higher the chance that individual makes more than $50,000 (exponential). 
+
+```{r include = F}
+
+#Plot by Marital Status
+
+marital_status_data <- data %>% group_by(marital_status) %>% count(income) %>% mutate(ratio=scales::percent(n/sum(n)))
+
+position <- levels(data$marital_status)[c(3, 2, 1, 4, 7, 6, 5)]
+
+plot11 <- data %>% ggplot(aes(marital_status, fill=forcats::fct_rev(income)))+ 
+  geom_bar(stat='count', position = 'fill') + 
+  scale_x_discrete(limits = position) +
+  coord_flip()+
+  geom_text(data=marital_status_data, aes(y=n,label=ratio), position=position_fill(vjust=0.5))+ 
+  ggtitle('Marital Status') + 
+  labs(y = '   ', x='   ', fill = "income")
+
+         
+#Plot by Relationship
+relationship_data <- data %>% group_by(relationship) %>% count(income) %>% mutate(ratio=scales::percent(n/sum(n)))
+
+position <- levels(data$relationship)[c(6, 1, 2, 5, 3, 4)] 
+
+plot12 <- data %>% ggplot(aes(relationship, fill=forcats::fct_rev(income))) + 
+  geom_bar(stat='count', position = 'fill') + 
+  scale_x_discrete(limits = position) +
+  coord_flip()+
+  geom_text(data=relationship_data, aes(y=n,label=ratio), position=position_fill(vjust=0.5)) +  
+  ggtitle('Relationship Status') + 
+  labs(y = '   ', x='    ', fill = "income")
+
+
+```
+
+```{r fig.height = 3.5}
+
+grid.arrange(plot11, plot12, ncol = 2)
+
+```
+
+**Marital Status** It seems that one's marital status can have an effect on one's chance of having an income greater than $\50,000. If one is married, they have almost 5 to 10 times as much chance of having an income greater than \$50,000 versus someone who is not married or not living with their spouse. 
+  
+**Relationship Status:** This variable seems slightly similar to marital status although the categories are slightly different. Once again, if one has a spouse, one can have between 4 to 25 times as much chance of having an income over $50,000 than an individual who is otherwise unmarried. 
+
+```{r include = F} 
+
+#plot workclass
+workclass_data <- data %>% group_by(workclass) %>% count(income) %>% mutate(ratio=scales::percent(n/sum(n)))
+
+position <- levels(data$workclass)[c(5, 1, 2, 6, 7, 4, 8)]
+
+plot7 <- data %>% ggplot(aes(workclass, fill=forcats::fct_rev(income))) + 
+  geom_bar(stat='count', position = 'fill') + 
+  scale_x_discrete(limits = position) +
+  coord_flip() + 
+  geom_text(data=workclass_data, aes(y=n,label=ratio), position=position_fill(vjust=0.5)) + 
+  ggtitle('Workclass') + 
+  labs(y = '   ', x='   ', fill = "income")
+                
+#plot occupation
+occupation_data <- data %>% group_by(occupation) %>% count(income) %>% mutate(ratio=scales::percent(n/sum(n)))
+
+position <- levels(data$occupation)[c(4, 10, 11, 13, 2, 12, 3, 14, 1, 7, 5, 6, 8, 9)]
+
+plot8 <- data %>% ggplot(aes(occupation, fill=forcats::fct_rev(income))) + 
+  geom_bar(stat='count', position = 'fill') +
+  scale_x_discrete(limits = position) +
+  coord_flip() + 
+  geom_text(data=occupation_data, aes(y=n,label=ratio), position=position_fill(vjust=0.5)) +
+  ggtitle('Occupation') + 
+  labs(y = '   ', x='   ', fill = "income")
+
+#Hours Per Week
+plot9 <- data %>% ggplot(aes(income, hours_per_week)) + geom_boxplot()+ggtitle('Hours Per Week') 
+new <- data %>% group_by(hours_per_week) %>% summarize (n(), average = mean(income == '>50K'))
+colnames (new) <- c('hours', 'n', 'income')
+plot10 <- new %>% ggplot (aes(hours, n, color = income)) + geom_point() + scale_y_log10() + ggtitle('Hours Per Week') + 
+  labs(x = 'Hours', y='Count', color= 'income')
+
+```
+
+
+```{r fig.height = 7}
+
+grid.arrange(plot7, plot8, plot9, plot10, ncol = 2, nrow = 2)
+
+```
+
+**Workclass** - Starting fromm the top left plot again, depending on the employment status and type of employment, the odds of one's income level signficantly varies. It makes sense that one who is not being paid is not making more than $\50,000. Slightly surprising to me personally is that more than half of individuals who are self-employed make more than \$50,000. Although this is not the feature selection stage, this variable seems like it would be a good predictor variable.
+
+**Occupation** - The top right plot indicates that - depending on occupation - one's income level varies significantly. Once again, it logically makes sense that an executive manager would have a much higher chance of making more than $50,000 than a private house server. This also seems to be a good predictor variable.
+  
+**Hours Per Week** - The box plot on the left indicates that the median higher-income earner works a greater number of hours than the median lower-income earner. The plot on the left shows, although not very strongly, there seems to be a trend betwen hours worked and income level. 
+
+```{r }
+#Capital Gains and Loss
+plot13 <- data %>% ggplot(aes(income, capital_gain)) + geom_boxplot() + scale_y_log10() + ggtitle('Capital Gain Boxplot')+ 
+  labs(x = '   ', y='Capital Gains Amount')
+plot14 <- data %>% ggplot(aes(income, capital_loss)) + geom_boxplot() + scale_y_log10() + ggtitle('Capital Loss Boxplot')+ 
+  labs(x = '   ', y='Capital Losses Amount')
+
+new <- as.data.frame(data$income) %>% mutate(capital_gain = factor(ifelse (data$capital_gain == 0, 'no', 'yes')))
+colnames(new) <- c('income', 'capital_gain')
+new <- new %>% group_by(capital_gain) %>% count(income) %>% mutate(ratio=scales::percent(n/sum(n)))
+
+plot15 <- data %>% mutate(capital_gain = factor(ifelse (capital_gain == 0, 'no', 'yes'))) %>% ggplot(aes(capital_gain, fill=forcats::fct_rev(income)))+ geom_bar(stat='count', position = 'fill') +
+  geom_text(data=new, aes(y=n,label=ratio), position=position_fill(vjust=0.5)) + ggtitle('Capital Gain Barplot')  + 
+  labs(y = '   ', x='   ', fill = "income")
+
+
+new <- as.data.frame(data$income) %>% mutate(capital_loss = factor(ifelse (data$capital_loss == 0, 'no', 'yes')))
+colnames(new) <- c('income', 'capital_loss')
+new <- new %>% group_by(capital_loss) %>% count(income) %>% mutate(ratio=scales::percent(n/sum(n)))
+
+plot16<- data %>% mutate(capital_loss = factor(ifelse (capital_loss == 0, 'no', 'yes'))) %>% ggplot(aes(capital_loss, fill=forcats::fct_rev(income))) + geom_bar(stat='count', position = 'fill') + 
+  geom_text(data=new, aes(y=n,label=ratio), position=position_fill(vjust=0.5)) + ggtitle('Capital Loss Barplot') + 
+  labs(y = '   ', x='   ', fill = "income")
+
+```
+
+```{r fig.height= 6}
+
+grid.arrange(plot13, plot14, plot15, plot16, ncol = 2)
+
+```
+
+**Capital Gains** - The capital gains plots indicate both that one who has reported capital gains is more likely to have made an income over $\50,000, as well as that higher capital gain amounts are associated with those who make over \$50,000. 
+  
+**Capital Loss** - The capital loss plots indicate that, like the capital gains variable, one who has reported capital losses is more likely to have had a higher income level versus someone who has not reported any capital losses. However, the amount one reports does not seem to be strongly linked with one's income. 
+  
+ 
+
+## Preprocessing
+
+```{r}
+#setseed <- function (i){}
+```
+
+**Step 1: Normalize** The first step is to normalize the variables, given that not doing so would not yield inaccurate models with algorithms such as the _k-nearest neighbours_ algorithm.
+  
+```{r include = F}
+
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+i <- c(1,3,5,11,12,13)
+
+data[,i] <- sapply(i, function(counter){
+  data[,counter] <- normalize (data[,counter])
+})
+
+```
+
+**Step 2: Seperate into training, testing and validation sets.** As it is rather computationally expensive to use the standard 80:20 or 70:30 training to validation ratio, only 10,000 sample rows are used for training, with 5000 allotted for training purposes and the approximately 30,000 remaining rows allotted for the validation set which will not be utilized until final testing.
+  
+**Step 3: Decide on a course of action for categorical variables.** Ordinarily categorical variables would need to be converted to numeric form through some form of encoding or turned into dummy variables. However, the machine learning models will accept it in categorical form so they simply need to be put into factored form.  
+  
+_Result:_
+The dataset is normalized and then split into train_set containing 10,050 rows, test_set containing 5024 rows and validation_set (which will not be used until the end) containing 30,148 rows.
+
+```{r include = F}
+
+#Seperating it into train and test
+data <- data %>% mutate(income= factor(income, labels = make.names(levels(income))))
+set.seed(1, sample.kind = 'Rounding')
+
+test_index1 <- createDataPartition(data$income, times = 1, p = 0.66666, list = FALSE)
+validation_set <- data[test_index1,]
+main_set <- data[-test_index1,]
+
+test_index2 <- createDataPartition(main_set$income, times = 1, p = 0.66666, list = FALSE)
+train_set <- main_set[test_index2,]
+test_set <- main_set[-test_index2,]
+
+```
+
+## Feature Engineering
+
+Feature engineering is an important part of this process for several reasons. Firstly, the greater the number of variables means the greater the computation time and a leaner set of feature variables would reduce computation time considerably. Furthermore, variables that have very little predictive power would just create unncessary noise and correlated variables would also not perform well with each other. Intuitively, I discerned that education and education_num were both clearly correlated and so only the better performing variable of the two would be chosen. 
+
+While there are variety of techniques that one could utilize for feature selection - including filter methods, wrapper methods and embedded methods - for simplicity, I chose the RFE wrapper method using the random forest algorithm. Optimized for accuracy, the RFE wrapper recursively reduces the number of features by ranking them by variable importance and dropping the lowest performing feature after each call. Keeping track of accuracy, I then chose the set of features that maximized accuracy.
+
+```{r include = F}
+
+#RFE Method
+set.seed(1, sample.kind = 'Rounding')
+control <- rfeControl(functions=rfFuncs, method="repeatedcv", number=5, repeats = 3)
+results <- rfe(train_set[,c(1:14)], train_set[,15], sizes=c(1:14), rfeControl=control)
+
+```
+
+```{r}
+plot(results, type=c("g", "o"))
+kable(varImp(results), caption = "Variable Importance")
+```
+
+Given that education and education_num are quite similar and education is ranked higher, eduation_num is removed. 
+
+Based on the results above, the following variables (indicated below) are selected for predictor variables in the models.
+
+```{r echo = T}
+frm <- as.formula(paste('income ~ capital_gain + capital_loss + marital_status + occupation + 
+                        age + relationship + education'))
+#frm stands for forumla
+```
+
+# Running the different Models
+
+## Hyperparameter Tuning
+  
+There are number of ways to tune each model. The five commonly used methods are:
+  
+* Manual Search
+    +  Manual Search may be the least computationally expensive and most efficient, especially if there is only one parameter. By visualizing the accuracy vs parameter, one can then narrow it down and find the exact value(s) to tune the model.
+   
+* Random Search
+    + Random Search, while not the most effective, may be the most efficient in cases where there are several parameters. It may not yield the best-tuned model, but would still be very effective.
+   
+* Grid Search
+    + Grid search, while thorough, is very computationally expensive given that it would have to run through every single combination of parameters and may not be the most efficient. It is however used for one model where grid search is the best option as there is only one parameter and manual search would be redundant.
+   
+* Automated Hyperparameter Tuning (Bayesian Optimization)
+    + Bayesian Optimization is computationally expensive in R and so is not used in this project, although the code for it is attached if one wants to run it.
+    
+* Artificial Neural Networks (ANNs) Tuning
+    + This project will not delve into neural networks although one could use it in this context. 
+  
+  
+Each model below is tuned with 5-fold cross validation repeated three times, to reduce computational time. Only the final models will be trained with 10 fold cross validation repeated 5 times.
+
+## Random Forest
+  
+Using the randomForest package, I chose to manually tune the mtry parameter as it would not very burdensome and would likely be less computationally expensive. 
+  
+```{r}
+
+set.seed(1, sample.kind = 'Rounding')
+control <- trainControl(method="repeatedcv", number=5, repeats=3)
+
+rf_fit1 <- train(frm, train_set, method="rf", trControl=control, tuneGrid = data.frame(mtry = seq(1,21, 2)))
+plot1 <- rf_fit1 %>% ggplot(aes(results[,1], results[,2])) + geom_point()
+
+rf_fit2 <- train(frm, train_set, method="rf", trControl=control, tuneGrid = data.frame(mtry = seq(5,11, 1)))
+plot2 <- rf_fit2 %>% ggplot(aes(results[,1], results[,2])) + geom_point()
+
+rf_fit <- rf_fit2
+
+grid.arrange(plot1, plot2, ncol = 2)
+
+```
+  
+## Logistic Regression
+  
+_Logistic Regression_ seems like an ideal choice given that is a binary classification. As there are no tuning parameters, the final model is trained with 5-fold cross validation repeated 3 times.
+  
+_Bayes Logistic Regression_ is also explored as well with 5-fold cross validation repeated 3 times. 
+  
+```{r}
+
+set.seed(1, sample.kind = 'Rounding')
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+
+glm_fit <- train(frm, train_set, method = "glm",trControl=control)
+bayesglm_fit <- train(frm, train_set, method = 'bayesglm',trControl=control)
+
+```
+  
+## K-Nearest Neighbours
+  
+The K-Nearest Neigbours model is trained with 5-fold cross validation repeated three times and the tuning paramater, k (nearest number of neighbours), is tuned using a grid search. 
+  
+```{r}
+
+set.seed(1, sample.kind = 'Rounding')
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+
+knn_fit <- train(frm, train_set, method="knn", trControl=control, tuneGrid = data.frame(k = seq(1, 326, 8)))
+knn_fit %>% ggplot(aes(results[,1], results[,2])) + geom_point()
+
+
+```
+  
+## Naive Bayes
+  
+The Naive Bayes algorithm is also employed using a random search consisting of 10 iterations and with 5-fold cross validation repeated three times. The number of iterations is quite low but as it is very computationally expensive to run a higher number of iterations, only 10 are run.
+  
+```{r}
+
+set.seed(1, sample.kind = 'Rounding')
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 3, search = 'random')
+nb_fit <- train(frm, train_set, method="nb", trControl=control, tuneLength = 10)
+
+```
+
+## Support Vector Machine
+
+There are two support vector machine algorithms I run: one with a linear kernel (svmLinear) and non-linear kernel (svm_radial). 
+
+_Svm_Linear_ has only one parameter, C(Cost), and is manually tuned. The final model is trained with 5-fold cross validation repeated 3 times.
+  
+```{r}
+
+set.seed(1, sample.kind = 'Rounding')
+control <- trainControl(method = "repeatedcv", repeats =5, number = 3, classProbs = T)
+
+svm_linear_fit1 <- train(frm, data = train_set, method = "svmLinear", trControl=control,  tuneGrid = data.frame(C = seq(1,65,8)))
+svm_linear_fit2 <- train(frm, data = train_set, method = "svmLinear", trControl=control,  tuneGrid = data.frame(C = seq(9,25,2)))
+
+plot1 <- svm_linear_fit1 %>% ggplot(aes(results[,1], results[,2])) + geom_point()
+plot2 <- svm_linear_fit2 %>% ggplot(aes(results[,1], results[,2])) + geom_point()
+
+grid.arrange(plot1, plot2, ncol = 2)
+
+```
+
+_Svm_Radial_ has several parameters and so random search is employed with 10 iterations, a low number but unavoidable given the computational expense. One could also utilize the bayesian optimization method and use the provided code in the R file.
+  
+
+```{r}
+#Randomly tuned
+
+set.seed(1, sample.kind = 'Rounding')
+control <- trainControl(method="repeatedcv", number=5, repeats=3, search = 'random', classProbs = T)
+svm_radial_fit <- train(frm, data=train_set, method="svmRadial", trControl=control, tuneLength = 10)
+
+```
+
+```{r eval = F}
+Bayes Optimization
+
+rand_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 3, search = "random")
+rand_search <- train(frm, data = train_set, method = "svmRadial", trControl = rand_ctrl)
+getTrainPerf(rand_search)
+
+ctrl <- trainControl(method = "repeatedcv", repeats = , number = 5)
+svm_fit_bayes <- function(logC, logSigma) {
+## Use the same model code but for a single (C, sigma) pair. 
+txt <- capture.output(
+mod <- train(frm, data = train_set,
+method = "svmRadial",trControl = ctrl,tuneGrid = data.frame(C = exp(logC), sigma = exp(logSigma))))
+list(Score = -getTrainPerf(mod)[, "TrainAccuracy"], Pred = 0)
+}
+lower_bounds <- c(logC = -5, logSigma = -9)
+upper_bounds <- c(logC = 20, logSigma = -0.75)
+bounds <- list(logC = c(lower_bounds[1], upper_bounds[1]),logSigma = c(lower_bounds[2], upper_bounds[2]))
+
+## Create a grid of values as the input into the BO code
+initial_grid <- rand_search$results[, c("C", "sigma", "Accuracy")]
+initial_grid$C <- log(initial_grid$C)
+initial_grid$sigma <- log(initial_grid$sigma)
+initial_grid$Accuracy <- -initial_grid$Accuracy
+names(initial_grid) <- c("logC", "logSigma", "Value")
+
+ba_search <- BayesianOptimization(svm_fit_bayes,bounds = bounds,init_grid_dt = initial_grid, init_points = 0, n_iter = 5,acq = "ucb", kappa = 1, eps = 0.0,verbose = TRUE)
+ba_search
+
+```
+
+## XGBoost
+
+The last algorithm employed is the XGBoost (Extreme Gradient Boosting). As the default method is to run 50 different combinations of parameters, there is no need to employ any form of parameter tuning. 
+
+```{r}
+
+set.seed(1, sample.kind = 'Rounding')
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+xgboost_fit <- train(frm, train_set, method = "xgbTree",trControl=control)
+
+```
+
+# Evaluation of Models
+
+## Choosing a Threshold
+There are a number of ways to optimize the final model. The three methods that I examine are: Pure accuracy, F_1, or Distance to Corner of ROC curve, or a combination of all three.
+
+**Confusion Matrix Accuracy** 
+$Accuracy = TP/FP$
+  
+While this may be a good metric to optimize for, it is possible that the model is not accurately identifying the minor class sample, which in this case would be the those whose income is greater than $50,000. Context is key! If maximizing the ratio of total correctly predicted to total incorrectly predicted is the goal, then a model optimized for accuracy is clearly the right choice. However, it may not be the most suitable model depending on the context.
+  
+**F1**
+$F1 = 2*(Recall*Precision)/(Recall+Precision)$
+  
+The F1 score is the harmonic mean between precision and recall and is perhaps a more important measure than accuracy in a certain context. This score will measure how well it can detect an income greater than $\50,000 (Recall) as well as how often it will be correct when it does (Precision). For example, if the federal government is trying to get in touch with all individuals who earn more than \$50,000 for tax reasons but wants to make sure it is only sending notices to the correct individuals, then a model optimized by the F1 score may be of more use to them given that context. If the focus is on better identifying the positive (smaller) class and if the classes are slightly imbalanced, which it is in this case, the F1 Score will be a better measure relative to other possible measures.
+  
+**ROC**
+$TPR$ vs $FPR$
+    
+The ROC curve (Receving Operating Characterstic Curve) is often used to measure the overall performance of a classifier which is calculated by the true positive rate against the false positive rate. An optimal cutoff point (Distance to Left Corner) is calculated for each model where the point on the ROC curve that has the minimum distance to the upper left corner is chosen as the optimal cutoff. Again, if the context requires the accurate detection of both classes and both classes are equally important, then this may be the most appropriate measure in this particular situation. 
+  
+  
+## ROC and PR Curve
+  
+```{r fig.height = 7, fig.cap = 'ROC Curve'}
+colors <- c("7", "5", '2', '3', '6', '12', '1')
+names2 <- c('Random Forest','Logistic Regression','Bayes Logistic Regression', 'K-Nearest Neighbours', 'Naive-Bayes', 'Support Vector Machine - Linear', 'Support Vector Machine - Radial', 'XGBoost')
+
+SS <- function(fit_type, data_type = test_set){
+  
+  result_predicted <- predict(fit_type, data_type, type="prob")
+  result_roc <- roc(data_type$income, result_predicted[,2])
+  return (result_roc)
+}
+
+plot(SS(rf_fit), print.thres.best.method="closest.topleft", col= '7')
+lines(SS(glm_fit), print.thres.best.method="closest.topleft", col='5')
+lines(SS(bayesglm_fit), print.thres.best.method="closest.topleft", col= '2')
+lines(SS(knn_fit), print.thres.best.method="closest.topleft", col= '3')
+lines(SS(svm_linear_fit), print.thres.best.method="closest.topleft", col= '6')
+lines(SS(svm_radial_fit), print.thres.best.method="closest.topleft", col= '12')
+lines(SS(xgboost_fit), print.thres.best.method="closest.topleft", col= '1')
+
+legend('bottomright',
+       legend=names2,
+       col= colors, 
+       lty=1)
+
+```
+  
+One can see that in regards to sensitivity and specificity, the XGBoost algorithm performs quite well in relation to the other algorithms.
+  
+```{r, fig.height = 7, fig.cap = 'Precision vs Recall'}
+
+PR <- function(type_fit, type_data = test_set){
+  pred <- prediction(predict(type_fit, type_data, type = 'prob')[,2], type_data$income)
+  perf <- performance(pred,"prec","rec")
+  return (perf)
+}
+plot(PR(xgboost_fit), col= '1')
+plot(PR(rf_fit), add = T, col="8")
+plot(PR(glm_fit), add = T, col= '5')
+plot(PR(bayesglm_fit), add = T, col= '2')
+plot(PR(knn_fit), add = T, col= '3')
+plot(PR(svm_linear_fit), add = T, col= '6')
+plot(PR(svm_radial_fit), add = T, col= '12')
+
+legend('bottomleft',
+       legend=c('XGBoost', 'Random Forest','Logistic Regression','Bayes Logistic Regression', 'K-Nearest Neighbours', 'Naive-Bayes', 'Support Vector Machine - Linear', 'Support Vector Machine - Radial'),
+       col=c('1', "8", "5", '2', '3', '6', '12'), 
+       lty=1)
+
+```
+  
+Again, one can see that the XGBoost Algorithm performs quite well, except for a certain area where Recall is between 0.4 and 0.7 and the Random Forest algorithm outshines the XGBoost Algorithm.
+
+## Model Results
+
+```{r helper functions, include = F}
+
+
+Accuracy_Info <- function(type_fit, data_type){
+  prediction <- predict(type_fit, data_type)
+  prediction <- factor(ifelse(prediction =='X..50K', 0, 1))
+  result_predicted <- predict(type_fit, data_type, type="prob")
+  data_type$income <- factor(ifelse(data_type$income =='X..50K', 0, 1))
+  
+  return(c(Accuracy (data_type$income, prediction),
+           F1_Score(data_type$income, prediction),
+           roc(data_type$income, result_predicted[,2])$auc,
+           Sensitivity(data_type$income, prediction),
+           Specificity(data_type$income, prediction),
+           Precision(data_type$income, prediction)
+  ))
+}
+
+Max_F1 <- function (type_fit, data_type){
+  
+  i <- seq(0.5, 0.9, 0.01)
+  pred <- predict(type_fit, data_type, type = "prob" )[,2]
+  
+  F1 <-sapply (i, function(counter){
+    prediction <- factor(ifelse(pred > counter, 1, 0))
+    F1_Score(factor(ifelse(data_type$income =='X..50K', 0, 1)), prediction)
+  })
+  
+  prediction <- factor(ifelse (pred > i[which.max(F1)], 1, 0))
+  result_predicted <- predict(type_fit, data_type, type="prob")
+  data_type$income <- factor(ifelse(data_type$income =='X..50K', 0, 1))
+  
+  return(c(Accuracy (data_type$income, prediction),
+           F1_Score(data_type$income, prediction),
+           roc(data_type$income, result_predicted[,2])$auc,
+           Sensitivity(data_type$income, prediction),
+           Specificity(data_type$income, prediction),
+           Precision(data_type$income, prediction)
+  ))
+}
+
+Min_D <- function(type_fit, data_type){
+  result_predicted <- predict(type_fit, data_type, type="prob")
+  result_roc <- roc(data_type$income, result_predicted[,2])
+  result_coords <- coords(result_roc, "best", best.method="closest.topleft", ret=c("threshold", "accuracy"))
+  prediction <- factor(ifelse (result_predicted[,2] > result_coords$threshold, 1, 0))
+  data_type$income <- factor(ifelse(data_type$income =='X..50K', 0, 1))
+  
+  return(c(Accuracy (data_type$income, prediction),
+           F1_Score(data_type$income, prediction),
+           roc(data_type$income, result_predicted[,2])$auc,
+           Sensitivity(data_type$income, prediction),
+           Specificity(data_type$income, prediction),
+           Precision(data_type$income, prediction)
+  ))
+}
+
+```
+
+
+```{r include = F}
+
+names1 <- c('Accuracy', 'F1', 'ROC-AUC', 'Sensitivity (TPR)','Specificity (TNR)','Precision')
+names2 <- c('Random Forest','Logistic Regression','Bayes Logistic Regression', 'K-Nearest Neighbours', 'Naive-Bayes', 'Support Vector Machine - Linear', 'Support Vector Machine - Radial', 'XGBoost')
+
+Accuracy_Table <- data.frame(
+  Accuracy_Info(rf_fit, test_set),
+  Accuracy_Info(glm_fit, test_set),
+  Accuracy_Info(bayesglm_fit, test_set),
+  Accuracy_Info(knn_fit, test_set),
+  Accuracy_Info(nb_fit, test_set),
+  Accuracy_Info(svm_linear_fit, test_set),
+  Accuracy_Info(svm_radial_fit, test_set),
+  Accuracy_Info(xgboost_fit, test_set)
+)
+colnames(Accuracy_Table) <- names2 
+row.names(Accuracy_Table) <- names1
+Accuracy_Table <- t(round(Accuracy_Table, 5))
+
+F1_Table <- data.frame(
+  Max_F1(rf_fit, test_set),
+  Max_F1(glm_fit, test_set),
+  Max_F1(bayesglm_fit, test_set),
+  Max_F1(knn_fit, test_set),
+  Max_F1(nb_fit, test_set), 
+  Max_F1(svm_linear_fit, test_set),
+  Max_F1(svm_radial_fit, test_set),
+  Max_F1(xgboost_fit, test_set)
+)
+colnames(F1_Table) <- names2
+row.names(F1_Table) <- names1
+F1_Table <- t(round(F1_Table, 5))
+
+
+Dist_Table <- data.frame(
+  Min_D(rf_fit, test_set),
+  Min_D(glm_fit, test_set),
+  Min_D(bayesglm_fit, test_set),
+  Min_D(knn_fit, test_set),
+  Min_D(nb_fit, test_set),
+  Min_D(svm_linear_fit, test_set),
+  Min_D(svm_radial_fit, test_set),
+  Min_D(xgboost_fit, test_set)
+)
+colnames(Dist_Table) <- names2
+row.names(Dist_Table) <- names1
+Dist_Table <- t(round(Dist_Table, 5))
+
+```
+
+
+```{r}
+
+kable(Accuracy_Table, caption = "All Models Optimized by Accuracy")
+
+```
+
+```{r}
+
+kable(F1_Table, caption = "All Models Optimized by F1 Score ")
+
+```
+
+```{r}
+
+kable(Dist_Table, caption = "All models Optimized by Distance to Left of ROC Curve")
+
+```
+
+It seems clear that the model that performs the best is the XGBoost Algorithm, in regards to Accuracy, F1 Score and Distance to Left Point of ROC Curve. As such, the XGBoost Algorithm is trained with 10-fold cross validation repeated 5 times and, after being optimized for Accuracy, F1 and Distance to Left Corner, is tested with the final validation set.
+
+# Conclusion
+  
+## Final model and test with Validation
+
+```{r include = F}
+set.seed(1, sample.kind = 'Rounding')
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 5)
+final_fit <- train(frm, train_set, method = "xgbTree",trControl=control)
+
+names1 <- c('Accuracy', 'F1', 'ROC-AUC', 'Sensitivity (TPR)','Specificity (TNR)','Precision')
+
+Final_Table <- data.frame(
+  Accuracy_Info(final_fit, validation_set),
+  Max_F1(final_fit, validation_set),
+  Min_D(final_fit, validation_set)
+  )
+
+colnames(Final_Table) <- c('Optimized by Accuracy', 'Optimized by F1', 'Optimized by Distance to Left')
+row.names(Final_Table) <- names1
+Final_Table<- t(round(Final_Table, 5))
+
+```
+
+```{r}
+
+kable(Final_Table, caption = "Final Models Optimized by Accuracy, F1 Score, and Distance to Left of ROC Curve")
+
+```
+
+## Final Results
+
+The best classifier all in all was the XGBoost Algorithm, achieving an accuracy of 0.865 on the final validation set. Optimized for F1, it achieves a score of approximately 0.914 and optimized for Distance to Left Corner of ROC Curve, a sensitivity and specificity higher than 0.825. 
+  
+In all respects, optimized for Accuracy, F1, and Distance to Left Corner, it was by far the best performing. Not far behind was the Random Forest Algorithm with the worst-performing algorithm being the Naive-Bayes algorithm. Further improvements include more precise parameter tuning of the XGBoost algorithm and possibly more refinement of the random forest algorithm which possibly could surpass the XGBoost. Ensemble algorithms and other machine learning algorithms not explored in this project may also be an improvement on the base XGBoost Algorithm.   
+  
+
+ 
